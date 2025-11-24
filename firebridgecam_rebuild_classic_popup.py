@@ -2613,6 +2613,9 @@ class FireBridgeCAM(QMainWindow):
     def add_leads(self, points, is_hole, kerf_type='outside'):
         """Add angle-controlled lead-in / lead-out."""
         
+        # Minimum value for length calculations to prevent division by zero
+        MIN_LENGTH_EPSILON = 1e-9
+        
         if kerf_type == 'none' or len(points) < 3:
             return points
         
@@ -2647,9 +2650,9 @@ class FireBridgeCAM(QMainWindow):
         ty /= tlen
         
         # Determine desired inward/outward direction
+        # v_to_center points FROM lead_point TO center
         v_to_center_x = cx - lead_point[0]
         v_to_center_y = cy - lead_point[1]
-        target_sign = 1.0 if kerf_type == "outside" else -1.0
         
         result = []
         
@@ -2666,16 +2669,27 @@ class FireBridgeCAM(QMainWindow):
             d1x, d1y = self.rotate(tx, ty, theta)
             d2x, d2y = self.rotate(tx, ty, -theta)
             
+            # Dot product with vector-to-center:
+            # Positive dot = direction points toward center
+            # Negative dot = direction points away from center
             dot1 = d1x*v_to_center_x + d1y*v_to_center_y
             dot2 = d2x*v_to_center_x + d2y*v_to_center_y
             
-            score1 = target_sign * dot1
-            score2 = target_sign * dot2
-            
-            if score1 >= score2:
-                dx_in, dy_in = d1x, d1y
-            else:
-                dx_in, dy_in = d2x, d2y
+            # Select direction based on kerf type:
+            # - OUTSIDE kerf: lead should point AWAY from center (negative dot)
+            # - INSIDE kerf: lead should point TOWARD center (positive dot)
+            if kerf_type == "outside":
+                # Pick the direction with more negative dot (away from center)
+                if dot1 < dot2:
+                    dx_in, dy_in = d1x, d1y
+                else:
+                    dx_in, dy_in = d2x, d2y
+            else:  # inside kerf
+                # Pick the direction with more positive dot (toward center)
+                if dot1 > dot2:
+                    dx_in, dy_in = d1x, d1y
+                else:
+                    dx_in, dy_in = d2x, d2y
             
             L = math.hypot(dx_in, dy_in)
             dx_in /= L
@@ -2719,6 +2733,8 @@ class FireBridgeCAM(QMainWindow):
             ex = end_pt[0] - prev_pt[0]
             ey = end_pt[1] - prev_pt[1]
             elen = math.hypot(ex, ey)
+            if elen < MIN_LENGTH_EPSILON:
+                elen = MIN_LENGTH_EPSILON  # Prevent division by zero
             ex /= elen
             ey /= elen
             
@@ -2726,18 +2742,33 @@ class FireBridgeCAM(QMainWindow):
             o1x, o1y = self.rotate(ex, ey, th)
             o2x, o2y = self.rotate(ex, ey, -th)
             
+            # Vector from end point to center
             v_end_x = cx - end_pt[0]
             v_end_y = cy - end_pt[1]
             
+            # Dot product with vector-to-center
             dot_o1 = o1x*v_end_x + o1y*v_end_y
             dot_o2 = o2x*v_end_x + o2y*v_end_y
             
-            if target_sign*dot_o1 >= target_sign*dot_o2:
-                dx_out, dy_out = o1x, o1y
-            else:
-                dx_out, dy_out = o2x, o2y
+            # Select direction based on kerf type:
+            # - OUTSIDE kerf: lead-out should point AWAY from center (negative dot)
+            # - INSIDE kerf: lead-out should point TOWARD center (positive dot)
+            if kerf_type == "outside":
+                # Pick the direction with more negative dot (away from center)
+                if dot_o1 < dot_o2:
+                    dx_out, dy_out = o1x, o1y
+                else:
+                    dx_out, dy_out = o2x, o2y
+            else:  # inside kerf
+                # Pick the direction with more positive dot (toward center)
+                if dot_o1 > dot_o2:
+                    dx_out, dy_out = o1x, o1y
+                else:
+                    dx_out, dy_out = o2x, o2y
             
             L = math.hypot(dx_out, dy_out)
+            if L < MIN_LENGTH_EPSILON:
+                L = MIN_LENGTH_EPSILON  # Prevent division by zero
             dx_out /= L
             dy_out /= L
             
@@ -3181,7 +3212,13 @@ class FireBridgeCAM(QMainWindow):
             
             # --- CUTTING MOVES ---
             
-            feed = toolpath.get('feed', self.settings['feed'])
+            # Get the feed rate, with proper fallback
+            # The toolpath may have 'feed': None, so we need to handle that case
+            path_feed = toolpath.get('feed')
+            if path_feed is None or path_feed <= 0:
+                feed = int(self.settings['feed'])  # Use global feed rate
+            else:
+                feed = int(path_feed)  # Use per-path feed rate
             
             # Small hole feed rate adjustment
             if is_hole:
