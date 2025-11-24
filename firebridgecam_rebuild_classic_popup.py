@@ -2590,17 +2590,27 @@ class FireBridgeCAM(QMainWindow):
         perp_dx = -edge_dy / edge_len
         perp_dy =  edge_dx / edge_len
         
-        # Direction test
+        # Direction test: Ensure perpendicular points in the correct direction
+        # dot > 0 means perpendicular points TOWARD center
+        # dot < 0 means perpendicular points AWAY from center
         cx = sum(p[0] for p in work_points) / len(work_points)
         cy = sum(p[1] for p in work_points) / len(work_points)
-        dot = perp_dx*(cx - lead_point[0]) + perp_dy*(cy - lead_point[1])
+        to_center_x = cx - lead_point[0]
+        to_center_y = cy - lead_point[1]
+        dot = perp_dx * to_center_x + perp_dy * to_center_y
         
-        if kerf_type == "inside" and dot < 0:
-            perp_dx = -perp_dx
-            perp_dy = -perp_dy
-        elif kerf_type != "inside" and dot > 0:
-            perp_dx = -perp_dx
-            perp_dy = -perp_dy
+        # Apply consistent flipping logic per kerf type
+        if kerf_type == "outside":
+            # Lead must go OUTWARD (away from center)
+            if dot > 0:  # Perpendicular currently points inward → flip
+                perp_dx = -perp_dx
+                perp_dy = -perp_dy
+        elif kerf_type == "inside":
+            # Lead must go INWARD (toward center)
+            if dot < 0:  # Perpendicular currently points outward → flip
+                perp_dx = -perp_dx
+                perp_dy = -perp_dy
+        # For 'none' kerf type, no specific direction preference
         
         return {
             "lead_point": lead_point,
@@ -2647,9 +2657,12 @@ class FireBridgeCAM(QMainWindow):
         ty /= tlen
         
         # Determine desired inward/outward direction
+        # v_to_center points TOWARD the center
+        # For OUTSIDE kerf: lead should go OUTWARD (away from center) → prefer negative dot
+        # For INSIDE kerf: lead should go INWARD (toward center) → prefer positive dot
         v_to_center_x = cx - lead_point[0]
         v_to_center_y = cy - lead_point[1]
-        target_sign = 1.0 if kerf_type == "outside" else -1.0
+        target_sign = -1.0 if kerf_type == "outside" else 1.0
         
         result = []
         
@@ -2807,79 +2820,6 @@ class FireBridgeCAM(QMainWindow):
                     })
             
             return corners
-    
-    def find_longest_edge_position(self, points, kerf_type):
-        """Fallback method to find lead position on longest edge"""
-        if len(points) < 2:
-            return None
-        
-        # Find longest edge
-        work_points = points[:-1] if (len(points) > 2 and 
-                                      abs(points[0][0] - points[-1][0]) < 0.01 and
-                                      abs(points[0][1] - points[-1][1]) < 0.01) else points
-        
-        longest_idx = 0
-        longest_len = 0
-        
-        for i in range(len(work_points)):
-            next_i = (i + 1) % len(work_points)
-            dx = work_points[next_i][0] - work_points[i][0]
-            dy = work_points[next_i][1] - work_points[i][1]
-            edge_len = math.sqrt(dx*dx + dy*dy)
-            
-            if edge_len > longest_len:
-                longest_len = edge_len
-                longest_idx = i
-        
-        if longest_len < 0.001:
-            return None
-        
-        # Get edge points
-        start_pt = work_points[longest_idx]
-        end_pt = work_points[(longest_idx + 1) % len(work_points)]
-        
-        # Position at 25% along edge
-        t = 0.25
-        lead_point = (
-            start_pt[0] + t * (end_pt[0] - start_pt[0]),
-            start_pt[1] + t * (end_pt[1] - start_pt[1])
-        )
-        
-        # Calculate perpendicular
-        edge_dx = end_pt[0] - start_pt[0]
-        edge_dy = end_pt[1] - start_pt[1]
-        edge_len = math.sqrt(edge_dx*edge_dx + edge_dy*edge_dy)
-        
-        if edge_len < 0.001:
-            return None
-        
-        perp_dx = -edge_dy / edge_len
-        perp_dy = edge_dx / edge_len
-        
-        # Determine direction based on shape center
-        center_x = sum(p[0] for p in work_points) / len(work_points)
-        center_y = sum(p[1] for p in work_points) / len(work_points)
-        
-        to_center_x = center_x - lead_point[0]
-        to_center_y = center_y - lead_point[1]
-        dot = perp_dx * to_center_x + perp_dy * to_center_y
-        
-        if kerf_type == 'inside':
-            if dot < 0:
-                perp_dx = -perp_dx
-                perp_dy = -perp_dy
-        else:  # outside or none
-            if dot > 0:
-                perp_dx = -perp_dx
-                perp_dy = -perp_dy
-        
-        return {
-            'lead_point': lead_point,
-            'perp_direction': (perp_dx, perp_dy),
-            'start_index': longest_idx,
-            'is_at_corner': False,
-            'corner_info': None
-        }
     
     def generate_toolpaths(self):
         print("=" * 50)
