@@ -2613,6 +2613,9 @@ class FireBridgeCAM(QMainWindow):
     def add_leads(self, points, is_hole, kerf_type='outside'):
         """Add angle-controlled lead-in / lead-out."""
         
+        # Minimum value for length calculations to prevent division by zero
+        MIN_LENGTH_EPSILON = 1e-9
+        
         if kerf_type == 'none' or len(points) < 3:
             return points
         
@@ -2730,8 +2733,8 @@ class FireBridgeCAM(QMainWindow):
             ex = end_pt[0] - prev_pt[0]
             ey = end_pt[1] - prev_pt[1]
             elen = math.hypot(ex, ey)
-            if elen < 1e-9:
-                elen = 1e-9  # Prevent division by zero
+            if elen < MIN_LENGTH_EPSILON:
+                elen = MIN_LENGTH_EPSILON  # Prevent division by zero
             ex /= elen
             ey /= elen
             
@@ -2764,8 +2767,8 @@ class FireBridgeCAM(QMainWindow):
                     dx_out, dy_out = o2x, o2y
             
             L = math.hypot(dx_out, dy_out)
-            if L < 1e-9:
-                L = 1e-9  # Prevent division by zero
+            if L < MIN_LENGTH_EPSILON:
+                L = MIN_LENGTH_EPSILON  # Prevent division by zero
             dx_out /= L
             dy_out /= L
             
