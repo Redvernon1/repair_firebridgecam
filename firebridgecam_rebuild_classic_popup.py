@@ -2518,6 +2518,7 @@ class FireBridgeCAM(QMainWindow):
         Fallback → longest straight edge.
         """
         
+        # Minimum 2 points required for any edge-based operations
         if len(points) < 2:
             return None
         
@@ -2528,11 +2529,13 @@ class FireBridgeCAM(QMainWindow):
         lead_mode = path.get("lead_placement", "corner")
         
         # Handle "Along Edge" mode if edge pick data is available
+        # Edge placement works with 2+ points
         if lead_mode == "edge" and path.get("edge_lead_pick"):
             edge_info = self.project_point_onto_path(points, path["edge_lead_pick"])
             if edge_info:
                 return edge_info
         
+        # Corner-based placement requires at least 3 points
         if len(points) < 3:
             return None
         
@@ -2634,11 +2637,13 @@ class FireBridgeCAM(QMainWindow):
         if len(points) < 2:
             return None
         
-        # Validate pick_point
-        if not pick_point or len(pick_point) != 2:
+        # Validate pick_point - must be a valid 2-element coordinate
+        if pick_point is None:
             return None
         
         try:
+            if len(pick_point) != 2:
+                return None
             px, py = pick_point
         except (TypeError, ValueError):
             return None
@@ -2672,6 +2677,7 @@ class FireBridgeCAM(QMainWindow):
             edge_dy = p2[1] - p1[1]
             edge_len_sq = edge_dx * edge_dx + edge_dy * edge_dy
             
+            # Skip degenerate edges (length < 1e-6, so squared < 1e-12)
             if edge_len_sq < 1e-12:
                 continue
             
