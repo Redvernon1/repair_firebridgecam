@@ -1,0 +1,15 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build outputs
+dist/
+build/
+*.egg-info/
