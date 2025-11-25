@@ -214,6 +214,10 @@ class InteractivePreviewCanvas(QWidget):
         self.show_grid = True
         self.grid_size = 10  # mm
         
+        # Edge lead picking state
+        self._waiting_for_edge_pick = False
+        self._edge_pick_path_idx = None
+        
         # Enable mouse tracking for hover effects
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.WheelFocus)
@@ -251,12 +255,30 @@ class InteractivePreviewCanvas(QWidget):
             event.accept()
     
     def mousePressEvent(self, event):
-        """Handle mouse press for selection and pan start"""
+        """Handle mouse press for selection, pan start, and edge lead picking"""
         if event.button() == Qt.MouseButton.LeftButton:
-            # Check if we clicked on a path
             click_x = event.pos().x()
             click_y = event.pos().y()
             
+            # Check if we're waiting for an edge pick for lead placement
+            if self._waiting_for_edge_pick and self._edge_pick_path_idx is not None:
+                # Convert screen coordinates to world coordinates
+                world_x = (click_x / self.scale) - self.offset_x
+                world_y = ((self.height() - click_y) / self.scale) - self.offset_y
+                
+                # Store the pick point in the path
+                if self._edge_pick_path_idx < len(self.paths):
+                    self.paths[self._edge_pick_path_idx]['edge_lead_pick'] = (world_x, world_y)
+                    self.kerf_changed.emit()
+                
+                # Reset edge picking state
+                self._waiting_for_edge_pick = False
+                self._edge_pick_path_idx = None
+                self.setCursor(Qt.CursorShape.CrossCursor)
+                self.update()
+                return
+            
+            # Check if we clicked on a path
             clicked_on_path = False
             for idx, path in enumerate(self.paths):
                 if self.is_click_on_path(click_x, click_y, path):
@@ -635,8 +657,12 @@ class InteractivePreviewCanvas(QWidget):
             painter.drawText(10, y_pos, 
                 f"Paths: {len(self.paths)} | Out: {outside} | In: {inside} | None: {none}")
         
-        # Bottom help text
-        help_text = "Mouse: Wheel=Zoom, Drag=Pan, Click=Select | Keys: F=Fit, G=Grid, D=Dims"
+        # Bottom help text - show edge pick message if waiting
+        if self._waiting_for_edge_pick:
+            painter.setPen(QPen(QColor(255, 255, 0), 1))  # Yellow for visibility
+            help_text = "🎯 Click on an edge to set lead placement position"
+        else:
+            help_text = "Mouse: Wheel=Zoom, Drag=Pan, Click=Select | Keys: F=Fit, G=Grid, D=Dims"
         painter.drawText(10, self.height() - 10, help_text)
     
     def set_paths(self, paths):
@@ -732,6 +758,36 @@ class InteractivePreviewCanvas(QWidget):
         
         action_toggle_leads.triggered.connect(toggle_leads)
         menu.addAction(action_toggle_leads)
+        
+        # --- Lead Placement submenu ---
+        lead_menu = menu.addMenu("Lead Placement")
+        
+        current_placement = path.get('lead_placement', 'corner')
+        
+        action_corner = QAction("📐 Corner (Auto)", self)
+        action_corner.setCheckable(True)
+        action_corner.setChecked(current_placement == 'corner')
+        def set_corner_lead():
+            path['lead_placement'] = 'corner'
+            path.pop('edge_lead_pick', None)  # Clear any edge pick
+            self.kerf_changed.emit()
+            self.update()
+        action_corner.triggered.connect(set_corner_lead)
+        lead_menu.addAction(action_corner)
+        
+        action_edge = QAction("📍 Along Edge (Click to Set)", self)
+        action_edge.setCheckable(True)
+        action_edge.setChecked(current_placement == 'edge')
+        def set_edge_lead():
+            path['lead_placement'] = 'edge'
+            # Store the current selected path index for edge picking
+            self._edge_pick_path_idx = self.selected_path_idx
+            self._waiting_for_edge_pick = True
+            self.setCursor(Qt.CursorShape.CrossCursor)  # Indicate picking mode
+            self.kerf_changed.emit()
+            self.update()
+        action_edge.triggered.connect(set_edge_lead)
+        lead_menu.addAction(action_edge)
         
         # --- Per-path feed override ---
         def set_feed_override():
