@@ -2511,11 +2511,27 @@ class FireBridgeCAM(QMainWindow):
         sa = math.sin(angle_rad)
         return vx * ca - vy * sa, vx * sa + vy * ca
     
-    def find_best_lead_position(self, points, kerf_type):
+    def find_best_lead_position(self, points, kerf_type, path=None):
         """
+        Determine where to place the lead for this path.
         Select the corner with the largest interior angle.
         Fallback → longest straight edge.
         """
+        
+        if len(points) < 2:
+            return None
+        
+        # Defensive: ensure path is a dict
+        if not isinstance(path, dict):
+            path = {}
+        
+        lead_mode = path.get("lead_placement", "corner")
+        
+        # Handle "Along Edge" mode if edge pick data is available
+        if lead_mode == "edge" and path.get("edge_lead_pick"):
+            edge_info = self.project_point_onto_path(points, path["edge_lead_pick"])
+            if edge_info:
+                return edge_info
         
         if len(points) < 3:
             return None
@@ -2610,7 +2626,108 @@ class FireBridgeCAM(QMainWindow):
             "corner_info": None,
         }
     
-    def add_leads(self, points, is_hole, kerf_type='outside'):
+    def project_point_onto_path(self, points, pick_point):
+        """
+        Given a world-space pick point and a polyline, find the closest edge.
+        Returns lead info dict or None if invalid.
+        """
+        if len(points) < 2:
+            return None
+        
+        # Validate pick_point
+        if not pick_point or len(pick_point) != 2:
+            return None
+        
+        try:
+            px, py = pick_point
+        except (TypeError, ValueError):
+            return None
+        
+        # Check if closed path
+        closed = (
+            len(points) > 2
+            and abs(points[0][0] - points[-1][0]) < 0.01
+            and abs(points[0][1] - points[-1][1]) < 0.01
+        )
+        work_points = points[:-1] if closed else points
+        n = len(work_points)
+        
+        if n < 2:
+            return None
+        
+        best_dist = float('inf')
+        best_idx = 0
+        best_t = 0.0
+        
+        for i in range(n):
+            j = (i + 1) % n if closed else i + 1
+            if j >= n:
+                continue
+            
+            p1 = work_points[i]
+            p2 = work_points[j]
+            
+            # Vector from p1 to p2
+            edge_dx = p2[0] - p1[0]
+            edge_dy = p2[1] - p1[1]
+            edge_len_sq = edge_dx * edge_dx + edge_dy * edge_dy
+            
+            if edge_len_sq < 1e-12:
+                continue
+            
+            # Project pick point onto edge
+            t = ((px - p1[0]) * edge_dx + (py - p1[1]) * edge_dy) / edge_len_sq
+            t = max(0.0, min(1.0, t))  # Clamp to edge
+            
+            # Closest point on edge
+            closest_x = p1[0] + t * edge_dx
+            closest_y = p1[1] + t * edge_dy
+            
+            # Distance from pick point to closest point
+            dist = math.hypot(px - closest_x, py - closest_y)
+            
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = i
+                best_t = t
+        
+        if best_dist == float('inf'):
+            return None
+        
+        # Get the edge points
+        j = (best_idx + 1) % n if closed else best_idx + 1
+        if j >= n:
+            j = n - 1
+        
+        p1 = work_points[best_idx]
+        p2 = work_points[j]
+        
+        # Lead point on the edge
+        lead_point = (
+            p1[0] + best_t * (p2[0] - p1[0]),
+            p1[1] + best_t * (p2[1] - p1[1])
+        )
+        
+        # Calculate perpendicular direction
+        edge_dx = p2[0] - p1[0]
+        edge_dy = p2[1] - p1[1]
+        edge_len = math.hypot(edge_dx, edge_dy)
+        
+        if edge_len < 1e-6:
+            return None
+        
+        perp_dx = -edge_dy / edge_len
+        perp_dy = edge_dx / edge_len
+        
+        return {
+            "lead_point": lead_point,
+            "perp_direction": (perp_dx, perp_dy),
+            "start_index": best_idx,
+            "is_at_corner": False,
+            "corner_info": None,
+        }
+    
+    def add_leads(self, points, is_hole, kerf_type='outside', path=None):
         """Add angle-controlled lead-in / lead-out."""
         
         if kerf_type == 'none' or len(points) < 3:
@@ -2631,7 +2748,9 @@ class FireBridgeCAM(QMainWindow):
         cy = sum(p[1] for p in work_points) / n
         
         # Choose best lead location
-        lead_info = self.find_best_lead_position(points, kerf_type)
+        # Ensure we have a valid path dict to pass
+        path_dict = path if path is not None else {}
+        lead_info = self.find_best_lead_position(points, kerf_type, path_dict)
         if not lead_info:
             return points
         
@@ -2935,7 +3054,7 @@ class FireBridgeCAM(QMainWindow):
                 print(f"  - Adding leads for {kerf_type} kerf (leads enabled)...")
                 is_hole = (kerf_type == 'inside')
                 try:
-                    final_points = self.add_leads(offset_points, is_hole, kerf_type)
+                    final_points = self.add_leads(offset_points, is_hole, kerf_type, path)
                     print(f"  - Leads added: {len(final_points)} points")
                 except Exception as e:
                     print(f"  - ❌ ERROR in add_leads: {e}")
