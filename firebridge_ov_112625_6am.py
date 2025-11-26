@@ -553,6 +553,34 @@ class InteractivePreviewCanvas(QWidget):
             if len(transformed) > 1:
                 painter.setPen(QPen(color, 2))
                 self.draw_arrow(painter, transformed[0], transformed[1])
+        
+        # Draw edge lead pick point indicator if set
+        if is_selected and path.get('edge_lead_pick'):
+            pick_x, pick_y = path['edge_lead_pick']
+            # Transform to screen coordinates
+            screen_x = (pick_x + self.offset_x) * self.scale
+            screen_y = self.height() - (pick_y + self.offset_y) * self.scale
+            
+            # Draw a distinctive marker for the lead pick point
+            # Outer glow
+            painter.setPen(QPen(QColor(255, 255, 0, 100), 12, Qt.PenStyle.SolidLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QPointF(screen_x, screen_y), 12, 12)
+            
+            # Main marker (yellow circle with cross)
+            painter.setPen(QPen(QColor(255, 255, 0), 3, Qt.PenStyle.SolidLine))
+            painter.setBrush(QBrush(QColor(255, 200, 0, 150)))
+            painter.drawEllipse(QPointF(screen_x, screen_y), 8, 8)
+            
+            # Draw crosshair
+            painter.setPen(QPen(QColor(255, 255, 255), 2, Qt.PenStyle.SolidLine))
+            painter.drawLine(QPointF(screen_x - 6, screen_y), QPointF(screen_x + 6, screen_y))
+            painter.drawLine(QPointF(screen_x, screen_y - 6), QPointF(screen_x, screen_y + 6))
+            
+            # Label
+            painter.setPen(QPen(QColor(255, 255, 0), 1))
+            painter.setFont(QFont('Arial', 9, QFont.Weight.Bold))
+            painter.drawText(QPointF(screen_x + 15, screen_y - 10), "Lead Point")
     
     def draw_arrow(self, painter, start, end):
         """Draw directional arrow"""
