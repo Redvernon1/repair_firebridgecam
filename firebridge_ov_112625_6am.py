@@ -214,6 +214,10 @@ class InteractivePreviewCanvas(QWidget):
         self.show_grid = True
         self.grid_size = 10  # mm
         
+        # Edge lead picking state
+        self._waiting_for_edge_pick = False
+        self._edge_pick_path_idx = None
+        
         # Enable mouse tracking for hover effects
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.WheelFocus)
@@ -251,12 +255,30 @@ class InteractivePreviewCanvas(QWidget):
             event.accept()
     
     def mousePressEvent(self, event):
-        """Handle mouse press for selection and pan start"""
+        """Handle mouse press for selection, pan start, and edge lead picking"""
         if event.button() == Qt.MouseButton.LeftButton:
-            # Check if we clicked on a path
             click_x = event.pos().x()
             click_y = event.pos().y()
             
+            # Check if we're waiting for an edge pick for lead placement
+            if self._waiting_for_edge_pick and self._edge_pick_path_idx is not None:
+                # Convert screen coordinates to world coordinates
+                world_x = (click_x / self.scale) - self.offset_x
+                world_y = ((self.height() - click_y) / self.scale) - self.offset_y
+                
+                # Store the pick point in the path
+                if self._edge_pick_path_idx < len(self.paths):
+                    self.paths[self._edge_pick_path_idx]['edge_lead_pick'] = (world_x, world_y)
+                    self.kerf_changed.emit()
+                
+                # Reset edge picking state
+                self._waiting_for_edge_pick = False
+                self._edge_pick_path_idx = None
+                self.setCursor(Qt.CursorShape.CrossCursor)
+                self.update()
+                return
+            
+            # Check if we clicked on a path
             clicked_on_path = False
             for idx, path in enumerate(self.paths):
                 if self.is_click_on_path(click_x, click_y, path):
@@ -531,6 +553,34 @@ class InteractivePreviewCanvas(QWidget):
             if len(transformed) > 1:
                 painter.setPen(QPen(color, 2))
                 self.draw_arrow(painter, transformed[0], transformed[1])
+        
+        # Draw edge lead pick point indicator if set
+        if is_selected and path.get('edge_lead_pick'):
+            pick_x, pick_y = path['edge_lead_pick']
+            # Transform to screen coordinates
+            screen_x = (pick_x + self.offset_x) * self.scale
+            screen_y = self.height() - (pick_y + self.offset_y) * self.scale
+            
+            # Draw a distinctive marker for the lead pick point
+            # Outer glow
+            painter.setPen(QPen(QColor(255, 255, 0, 100), 12, Qt.PenStyle.SolidLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(QPointF(screen_x, screen_y), 12, 12)
+            
+            # Main marker (yellow circle with cross)
+            painter.setPen(QPen(QColor(255, 255, 0), 3, Qt.PenStyle.SolidLine))
+            painter.setBrush(QBrush(QColor(255, 200, 0, 150)))
+            painter.drawEllipse(QPointF(screen_x, screen_y), 8, 8)
+            
+            # Draw crosshair
+            painter.setPen(QPen(QColor(255, 255, 255), 2, Qt.PenStyle.SolidLine))
+            painter.drawLine(QPointF(screen_x - 6, screen_y), QPointF(screen_x + 6, screen_y))
+            painter.drawLine(QPointF(screen_x, screen_y - 6), QPointF(screen_x, screen_y + 6))
+            
+            # Label
+            painter.setPen(QPen(QColor(255, 255, 0), 1))
+            painter.setFont(QFont('Arial', 9, QFont.Weight.Bold))
+            painter.drawText(QPointF(screen_x + 15, screen_y - 10), "Lead Point")
     
     def draw_arrow(self, painter, start, end):
         """Draw directional arrow"""
@@ -635,8 +685,12 @@ class InteractivePreviewCanvas(QWidget):
             painter.drawText(10, y_pos, 
                 f"Paths: {len(self.paths)} | Out: {outside} | In: {inside} | None: {none}")
         
-        # Bottom help text
-        help_text = "Mouse: Wheel=Zoom, Drag=Pan, Click=Select | Keys: F=Fit, G=Grid, D=Dims"
+        # Bottom help text - show edge pick message if waiting
+        if self._waiting_for_edge_pick:
+            painter.setPen(QPen(QColor(255, 255, 0), 1))  # Yellow for visibility
+            help_text = "🎯 Click on an edge to set lead placement position"
+        else:
+            help_text = "Mouse: Wheel=Zoom, Drag=Pan, Click=Select | Keys: F=Fit, G=Grid, D=Dims"
         painter.drawText(10, self.height() - 10, help_text)
     
     def set_paths(self, paths):
@@ -732,6 +786,36 @@ class InteractivePreviewCanvas(QWidget):
         
         action_toggle_leads.triggered.connect(toggle_leads)
         menu.addAction(action_toggle_leads)
+        
+        # --- Lead Placement submenu ---
+        lead_menu = menu.addMenu("Lead Placement")
+        
+        current_placement = path.get('lead_placement', 'corner')
+        
+        action_corner = QAction("📐 Corner (Auto)", self)
+        action_corner.setCheckable(True)
+        action_corner.setChecked(current_placement == 'corner')
+        def set_corner_lead():
+            path['lead_placement'] = 'corner'
+            path.pop('edge_lead_pick', None)  # Clear any edge pick
+            self.kerf_changed.emit()
+            self.update()
+        action_corner.triggered.connect(set_corner_lead)
+        lead_menu.addAction(action_corner)
+        
+        action_edge = QAction("📍 Along Edge (Click to Set)", self)
+        action_edge.setCheckable(True)
+        action_edge.setChecked(current_placement == 'edge')
+        def set_edge_lead():
+            path['lead_placement'] = 'edge'
+            # Store the current selected path index for edge picking
+            self._edge_pick_path_idx = self.selected_path_idx
+            self._waiting_for_edge_pick = True
+            self.setCursor(Qt.CursorShape.CrossCursor)  # Indicate picking mode
+            self.kerf_changed.emit()
+            self.update()
+        action_edge.triggered.connect(set_edge_lead)
+        lead_menu.addAction(action_edge)
         
         # --- Per-path feed override ---
         def set_feed_override():
@@ -2511,12 +2595,31 @@ class FireBridgeCAM(QMainWindow):
         sa = math.sin(angle_rad)
         return vx * ca - vy * sa, vx * sa + vy * ca
     
-    def find_best_lead_position(self, points, kerf_type):
+    def find_best_lead_position(self, points, kerf_type, path=None):
         """
+        Determine where to place the lead for this path.
         Select the corner with the largest interior angle.
         Fallback → longest straight edge.
         """
         
+        # Minimum 2 points required for any edge-based operations
+        if len(points) < 2:
+            return None
+        
+        # Defensive: ensure path is a dict
+        if not isinstance(path, dict):
+            path = {}
+        
+        lead_mode = path.get("lead_placement", "corner")
+        
+        # Handle "Along Edge" mode if edge pick data is available
+        # Edge placement works with 2+ points
+        if lead_mode == "edge" and path.get("edge_lead_pick"):
+            edge_info = self.project_point_onto_path(points, path["edge_lead_pick"])
+            if edge_info:
+                return edge_info
+        
+        # Corner-based placement requires at least 3 points
         if len(points) < 3:
             return None
         
@@ -2610,7 +2713,111 @@ class FireBridgeCAM(QMainWindow):
             "corner_info": None,
         }
     
-    def add_leads(self, points, is_hole, kerf_type='outside'):
+    def project_point_onto_path(self, points, pick_point):
+        """
+        Given a world-space pick point and a polyline, find the closest edge.
+        Returns lead info dict or None if invalid.
+        """
+        if len(points) < 2:
+            return None
+        
+        # Validate pick_point - must be a valid 2-element coordinate
+        if pick_point is None:
+            return None
+        
+        try:
+            if len(pick_point) != 2:
+                return None
+            px, py = pick_point
+        except (TypeError, ValueError):
+            return None
+        
+        # Check if closed path
+        closed = (
+            len(points) > 2
+            and abs(points[0][0] - points[-1][0]) < 0.01
+            and abs(points[0][1] - points[-1][1]) < 0.01
+        )
+        work_points = points[:-1] if closed else points
+        n = len(work_points)
+        
+        if n < 2:
+            return None
+        
+        best_dist = float('inf')
+        best_idx = 0
+        best_t = 0.0
+        
+        for i in range(n):
+            j = (i + 1) % n if closed else i + 1
+            if j >= n:
+                continue
+            
+            p1 = work_points[i]
+            p2 = work_points[j]
+            
+            # Vector from p1 to p2
+            edge_dx = p2[0] - p1[0]
+            edge_dy = p2[1] - p1[1]
+            edge_len_sq = edge_dx * edge_dx + edge_dy * edge_dy
+            
+            # Skip degenerate edges (length < 1e-6, so squared < 1e-12)
+            if edge_len_sq < 1e-12:
+                continue
+            
+            # Project pick point onto edge
+            t = ((px - p1[0]) * edge_dx + (py - p1[1]) * edge_dy) / edge_len_sq
+            t = max(0.0, min(1.0, t))  # Clamp to edge
+            
+            # Closest point on edge
+            closest_x = p1[0] + t * edge_dx
+            closest_y = p1[1] + t * edge_dy
+            
+            # Distance from pick point to closest point
+            dist = math.hypot(px - closest_x, py - closest_y)
+            
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = i
+                best_t = t
+        
+        if best_dist == float('inf'):
+            return None
+        
+        # Get the edge points
+        j = (best_idx + 1) % n if closed else best_idx + 1
+        if j >= n:
+            j = n - 1
+        
+        p1 = work_points[best_idx]
+        p2 = work_points[j]
+        
+        # Lead point on the edge
+        lead_point = (
+            p1[0] + best_t * (p2[0] - p1[0]),
+            p1[1] + best_t * (p2[1] - p1[1])
+        )
+        
+        # Calculate perpendicular direction
+        edge_dx = p2[0] - p1[0]
+        edge_dy = p2[1] - p1[1]
+        edge_len = math.hypot(edge_dx, edge_dy)
+        
+        if edge_len < 1e-6:
+            return None
+        
+        perp_dx = -edge_dy / edge_len
+        perp_dy = edge_dx / edge_len
+        
+        return {
+            "lead_point": lead_point,
+            "perp_direction": (perp_dx, perp_dy),
+            "start_index": best_idx,
+            "is_at_corner": False,
+            "corner_info": None,
+        }
+    
+    def add_leads(self, points, is_hole, kerf_type='outside', path=None):
         """Add angle-controlled lead-in / lead-out."""
         
         if kerf_type == 'none' or len(points) < 3:
@@ -2631,7 +2838,9 @@ class FireBridgeCAM(QMainWindow):
         cy = sum(p[1] for p in work_points) / n
         
         # Choose best lead location
-        lead_info = self.find_best_lead_position(points, kerf_type)
+        # Ensure we have a valid path dict to pass
+        path_dict = path if path is not None else {}
+        lead_info = self.find_best_lead_position(points, kerf_type, path_dict)
         if not lead_info:
             return points
         
@@ -2649,7 +2858,9 @@ class FireBridgeCAM(QMainWindow):
         # Determine desired inward/outward direction
         v_to_center_x = cx - lead_point[0]
         v_to_center_y = cy - lead_point[1]
-        target_sign = 1.0 if kerf_type == "outside" else -1.0
+        # For outside kerf: leads should point away from center (negative dot product)
+        # For inside kerf: leads should point toward center (positive dot product)
+        target_sign = -1.0 if kerf_type == "outside" else 1.0
         
         result = []
         
@@ -2935,7 +3146,7 @@ class FireBridgeCAM(QMainWindow):
                 print(f"  - Adding leads for {kerf_type} kerf (leads enabled)...")
                 is_hole = (kerf_type == 'inside')
                 try:
-                    final_points = self.add_leads(offset_points, is_hole, kerf_type)
+                    final_points = self.add_leads(offset_points, is_hole, kerf_type, path)
                     print(f"  - Leads added: {len(final_points)} points")
                 except Exception as e:
                     print(f"  - ❌ ERROR in add_leads: {e}")
