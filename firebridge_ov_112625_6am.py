@@ -2830,7 +2830,9 @@ class FireBridgeCAM(QMainWindow):
         # Determine desired inward/outward direction
         v_to_center_x = cx - lead_point[0]
         v_to_center_y = cy - lead_point[1]
-        target_sign = 1.0 if kerf_type == "outside" else -1.0
+        # For outside kerf: leads should point away from center (negative dot product)
+        # For inside kerf: leads should point toward center (positive dot product)
+        target_sign = -1.0 if kerf_type == "outside" else 1.0
         
         result = []
         
